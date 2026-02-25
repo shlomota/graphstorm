@@ -840,7 +840,7 @@ class LinkPredictContrastiveLossFunc(GSLayer):
         self._temp = temp
         self._debug_print = True
 
-    def forward(self, pos_score, neg_score):
+    def forward(self, pos_score, neg_score, edge_weights=None):
         """ The forward function.
 
         Parameters
@@ -849,6 +849,11 @@ class LinkPredictContrastiveLossFunc(GSLayer):
             The scores for positive edges of each edge type.
         neg_score: dict of Tensor
             The scores for negative edges of each edge type.
+        edge_weights: dict of Tensor, optional
+            Per-positive-edge weights of shape [num_edges] for each edge type.
+            When provided, the loss is computed as a weighted mean so that edges
+            with higher weights contribute proportionally more (approximating
+            duplicate positive edges in the training data). Default: None.
 
         Returns
         -------
@@ -857,15 +862,22 @@ class LinkPredictContrastiveLossFunc(GSLayer):
         """
         pscore = []
         nscore = []
+        weights_list = []
         for key, p_s in pos_score.items():
             assert key in neg_score, \
                 f"Negative scores of {key} must exists"
             n_s = neg_score[key]
 
-            # Both p_s and n_s are soreted according to source nid
+            # Both p_s and n_s are sorted according to source nid
             # (which are same in pos_graph and neg_graph)
             pscore.append(p_s)
             nscore.append(n_s.reshape(p_s.shape[0], -1))
+            if edge_weights is not None and key in edge_weights:
+                w = edge_weights[key]
+                # Ensure 1-D weight tensor
+                if w.dim() > 1:
+                    w = w.squeeze(-1)
+                weights_list.append(w)
         pscore = th.cat(pscore, dim=0)
         nscore = th.cat(nscore, dim=0)
 
@@ -875,7 +887,16 @@ class LinkPredictContrastiveLossFunc(GSLayer):
 
         exp_logits = th.exp(score)
         log_prob = pscore - th.log(exp_logits.sum(1))
-        loss = -log_prob.mean()
+
+        if edge_weights is not None and len(weights_list) > 0:
+            # Weighted mean: approximates duplicating positive edges by their weight.
+            # We weight only the positive loss contribution; negatives remain unchanged
+            # per positive sample.
+            weights = th.cat(weights_list, dim=0).to(pscore.device)
+            weights = weights / weights.sum()
+            loss = -(weights * log_prob).sum()
+        else:
+            loss = -log_prob.mean()
 
         # For debugging abnormal loss values.
         if self._debug_print and get_rank() == 0:

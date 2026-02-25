@@ -91,7 +91,8 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
             edge_mask_for_gnn_embeddings='train_mask',
             freeze_input_layer_epochs=0,
             max_grad_norm=None,
-            grad_norm_type=2.0):
+            grad_norm_type=2.0,
+            max_steps=None):
         """ Fit function for link prediction.
 
         This function performs the training for the given link prediction model.
@@ -146,6 +147,10 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
             in `torch.nn.utils.clip_grad_norm_ <https://pytorch.org/docs/2.1/generated/
             torch.nn.utils.clip_grad_norm_.html#torch.nn.utils.clip_grad_norm_>`__.
             Default: 2.0.
+        max_steps: int, optional
+            Maximum number of training steps (batches) across all epochs. Training stops
+            once this many steps have been processed, then proceeds to evaluation and
+            model saving as if the epoch completed normally. Default: None (no limit).
         """
         if not use_mini_batch_infer:
             assert isinstance(self._model, GSgnnModel), \
@@ -270,8 +275,13 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
 
                 batch_tic = time.time()
                 rt_profiler.record('train_eval')
-                # early_stop, exit current interation.
+                # early_stop, exit current iteration.
                 if early_stop is True:
+                    break
+                # max_steps reached, stop training this epoch.
+                if max_steps is not None and total_steps >= max_steps:
+                    if get_rank() == 0:
+                        logging.info("Reached max_steps=%d. Stopping training.", max_steps)
                     break
 
             # ------- end of an epoch -------
@@ -302,6 +312,9 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
 
             # early_stop, exit training
             if early_stop is True:
+                break
+            # max_steps reached, exit training after post-epoch steps.
+            if max_steps is not None and total_steps >= max_steps:
                 break
 
         rt_profiler.save_profile()
@@ -364,6 +377,12 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
             emb = do_full_graph_inference(model, data, fanout=val_loader.fanout,
                                           edge_mask=edge_mask_for_gnn_embeddings,
                                           task_tracker=self.task_tracker)
+
+        # Apply grounding post-processing for 'freeze' method:
+        # replace ground_ntype embeddings with input embeddings during inference.
+        if hasattr(model, 'apply_ground_to_embeddings'):
+            emb = model.apply_ground_to_embeddings(emb, data, self.device)
+
         sys_tracker.check('compute embeddings')
         if val_loader is not None:
             val_rankings, val_lengths = lp_mini_batch_predict(

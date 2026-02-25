@@ -926,6 +926,7 @@ class GSConfig:
             _ = self.decoder_norm
             _ = self.sparse_optimizer_lr
             _ = self.num_epochs
+            _ = self.max_steps
             _ = self.save_model_path
             _ = self.save_model_frequency
             _ = self.topk_model_to_save
@@ -1017,6 +1018,9 @@ class GSConfig:
             _ = self.num_negative_edges_eval
             _ = self.model_select_etype
             _ = self.lp_embed_normalizer
+            _ = self.ground_ntype
+            _ = self.ground_method
+            _ = self.ground_coef
 
         # For inference tasks in particular
         if self.task_type in [
@@ -2054,6 +2058,17 @@ class GSConfig:
         return 0
 
     @property
+    def max_steps(self):
+        """ Maximum number of training steps (batches) across all epochs.
+            Training will stop early once this many steps have been processed,
+            even if the current epoch has not finished. Default is None (no limit).
+        """
+        if hasattr(self, "_max_steps"):
+            assert self._max_steps > 0, "max_steps must be a positive integer"
+            return self._max_steps
+        return None
+
+    @property
     def batch_size(self):
         """ Mini-batch size. It defines the batch size of each trainer. The global batch
             size equals to the number of trainers multiply the batch_size. For example,
@@ -2840,13 +2855,6 @@ class GSConfig:
             assert self.task_type == BUILTIN_TASK_LINK_PREDICTION, \
                 "Edge weight for loss only works with link prediction"
 
-            if self.lp_loss_func in [ BUILTIN_LP_LOSS_CONTRASTIVELOSS]:
-                logging.warning("lp_edge_weight_for_loss does not work with "
-                                "%s loss in link prediction."
-                                "Disable edge weight for link prediction loss.",
-                                BUILTIN_LP_LOSS_CONTRASTIVELOSS)
-                return None
-
             edge_weights = self._lp_edge_weight_for_loss
             if len(edge_weights) == 1 and \
                 ":" not in edge_weights[0]:
@@ -2872,6 +2880,46 @@ class GSConfig:
             return weight_dict
 
         return None
+
+    @property
+    def ground_ntype(self):
+        """ Node type whose output embeddings should be grounded to their input embeddings.
+            When set, the model will either replace the GNN output with the input embedding
+            ('freeze') or add an MSE reconstruction loss ('reconstruct') for this node type.
+            Grounding is only applied when the input and hidden dimensions match.
+            Default is None (no grounding).
+        """
+        # pylint: disable=no-member
+        if hasattr(self, "_ground_ntype"):
+            assert self.task_type == BUILTIN_TASK_LINK_PREDICTION, \
+                "ground_ntype only works with link prediction"
+            return self._ground_ntype
+        return None
+
+    @property
+    def ground_method(self):
+        """ Grounding method to apply when ``ground_ntype`` is set.
+            ``'freeze'``: replaces the GNN output with the input embedding.
+            ``'reconstruct'``: adds an MSE reconstruction loss weighted by ``ground_coef``.
+            Default is ``'freeze'``.
+        """
+        # pylint: disable=no-member
+        if hasattr(self, "_ground_method"):
+            assert self._ground_method in ["freeze", "reconstruct"], \
+                f"ground_method must be 'freeze' or 'reconstruct', got '{self._ground_method}'"
+            return self._ground_method
+        return "freeze"
+
+    @property
+    def ground_coef(self):
+        """ Coefficient for the reconstruction loss when ``ground_method='reconstruct'``.
+            Default is 0.1.
+        """
+        # pylint: disable=no-member
+        if hasattr(self, "_ground_coef"):
+            assert self._ground_coef > 0, "ground_coef must be positive"
+            return float(self._ground_coef)
+        return 0.1
 
     def _get_predefined_negatives_per_etype(self, negatives):
         if len(negatives) == 1 and \
@@ -3600,6 +3648,10 @@ def _add_hyperparam_args(parser):
             help="learning rate")
     group.add_argument("-e", "--num-epochs", type=int, default=argparse.SUPPRESS,
             help="number of training epochs")
+    group.add_argument("--max-steps", type=int, default=argparse.SUPPRESS,
+            help="Maximum number of training steps (batches) across all epochs. "
+                 "Training stops early once this many steps have been processed. "
+                 "Default: None (no limit).")
     group.add_argument("--batch-size", type=int, default=argparse.SUPPRESS,
             help="Mini-batch size. Must be larger than 0")
     group.add_argument("--sparse-optimizer-lr", type=float, default=argparse.SUPPRESS,
@@ -3841,6 +3893,21 @@ def _add_link_prediction_args(parser):
             "The corresponding feature name is <feat_name>"
             "2)'--lp-edge-weight-for-loss query,adds,asin:weight0 query,clicks,asin:weight1 ..."
             "Different edge types have different weight fields.")
+    group.add_argument("--ground-ntype", type=str, default=argparse.SUPPRESS,
+            help="Node type to 'ground' during link prediction training and inference. "
+                 "The model will keep this node type's embeddings close to their input "
+                 "embeddings using the method specified by --ground-method. "
+                 "Only applied when input and hidden dimensions match. Default: None.")
+    group.add_argument("--ground-method", type=str, default=argparse.SUPPRESS,
+            help="Grounding method when --ground-ntype is set. "
+                 "'freeze': replaces the GNN output with the input embedding for the "
+                 "grounded node type. "
+                 "'reconstruct': adds an MSE reconstruction loss (weighted by --ground-coef) "
+                 "that encourages the GNN output to stay close to the input embedding. "
+                 "Default: 'freeze'.")
+    group.add_argument("--ground-coef", type=float, default=argparse.SUPPRESS,
+            help="Coefficient for the MSE reconstruction loss when --ground-method=reconstruct. "
+                 "Default: 0.1.")
     group.add_argument("--model-select-etype", type=str, default=argparse.SUPPRESS,
             help="Canonical edge type used for selecting best model during "
                  "link prediction training. It can be in following format:"

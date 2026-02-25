@@ -16,6 +16,7 @@
     GNN model for link prediction in GraphStorm.
 """
 import abc
+import logging
 from collections import defaultdict
 from typing import Dict, List, Tuple, Union
 
@@ -24,6 +25,7 @@ import torch as th
 from ..dataloading.dataloading import GSgnnEdgeDataLoader
 from .gnn import GSgnnModel, GSgnnModelBase
 from ..model.edge_decoder import LinkPredictionTestScoreInterface
+from .loss_func import LinkPredictContrastiveLossFunc
 from .utils import normalize_node_embs
 from ..eval.utils import calc_ranking
 
@@ -96,12 +98,27 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
         alpha_l2norm : float
             The alpha for L2 normalization.
         embed_norm_method: str
-            Node embedding normalization method
+            Node embedding normalization method.
+        ground_ntype: str, optional
+            Node type whose embeddings should be "grounded" to their input embeddings.
+            Only applied when input and hidden dimensions match. Default: None.
+        ground_method: str, optional
+            Grounding method. ``"freeze"`` replaces the GNN output with the input embedding
+            for ``ground_ntype``. ``"reconstruct"`` adds an MSE reconstruction loss that
+            encourages the GNN output to stay close to the input embedding. Default: ``"freeze"``.
+        ground_coef: float, optional
+            Coefficient for the reconstruction loss when ``ground_method="reconstruct"``.
+            Default: 0.1.
     """
-    def __init__(self, alpha_l2norm, embed_norm_method=None):
+    def __init__(self, alpha_l2norm, embed_norm_method=None,
+                 ground_ntype=None, ground_method="freeze", ground_coef=0.1):
         super(GSgnnLinkPredictionModel, self).__init__()
         self.alpha_l2norm = alpha_l2norm
         self.embed_norm_method = embed_norm_method
+        self.ground_ntype = ground_ntype
+        self.ground_method = ground_method
+        self.ground_coef = ground_coef
+        self._ground_dim_warned = False  # Avoid repeated dimension-mismatch warnings
 
     def normalize_node_embs(self, embs):
         return normalize_node_embs(embs, self.embed_norm_method)
@@ -117,9 +134,41 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
             in message passing computation.
         """
         alpha_l2norm = self.alpha_l2norm
+        recon_loss = th.tensor(0.)
+
         if blocks is None or len(blocks) == 0:
             # no GNN message passing, just compute node embeddings
             encode_embs = self.comput_input_embed(input_nodes, node_feats)
+        elif self.ground_ntype is not None:
+            # Grounding: always need both input and GNN embeddings
+            input_embs = self.comput_input_embed(input_nodes, node_feats)
+            gnn_embs = self.compute_embed_step(blocks, node_feats, input_nodes, edge_feats)
+
+            if self.ground_ntype in gnn_embs and self.ground_ntype in input_embs:
+                gnd_out = gnn_embs[self.ground_ntype]
+                gnd_inp = input_embs[self.ground_ntype]
+                if gnd_out.shape[-1] != gnd_inp.shape[-1]:
+                    if not self._ground_dim_warned:
+                        logging.warning(
+                            "Grounding skipped for '%s': input dim %d != hidden dim %d. "
+                            "Grounding only supported when dimensions match.",
+                            self.ground_ntype, gnd_inp.shape[-1], gnd_out.shape[-1])
+                        self._ground_dim_warned = True
+                    encode_embs = gnn_embs
+                elif self.ground_method == "freeze":
+                    # Replace GNN output with input embedding for ground_ntype
+                    encode_embs = dict(gnn_embs)
+                    encode_embs[self.ground_ntype] = gnd_inp
+                elif self.ground_method == "reconstruct":
+                    # Use GNN output but add MSE reconstruction loss
+                    encode_embs = gnn_embs
+                    recon_loss = th.nn.functional.mse_loss(gnd_out, gnd_inp.detach())
+                else:
+                    raise ValueError(
+                        f"Unknown ground_method '{self.ground_method}'. "
+                        "Supported: 'freeze', 'reconstruct'.")
+            else:
+                encode_embs = gnn_embs
         else:
             # has GNN encoder, compute node embedding, or optional edge embeddings
             encode_embs = self.compute_embed_step(blocks, node_feats, input_nodes, edge_feats)
@@ -134,7 +183,15 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
         assert pos_score.keys() == neg_score.keys(), \
             "Positive scores and Negative scores must have edges of same" \
             f"edge types, but get {pos_score.keys()} and {neg_score.keys()}"
-        pred_loss = self.loss_func(pos_score, neg_score)
+
+        # For contrastive loss, pass edge weights from pos_edge_feats to the loss function
+        # so it can compute a weighted mean (approximating duplicated positive edges).
+        if isinstance(self.loss_func, LinkPredictContrastiveLossFunc) \
+                and pos_edge_feats is not None:
+            edge_weights = {etype: feats for etype, feats in pos_edge_feats.items()}
+            pred_loss = self.loss_func(pos_score, neg_score, edge_weights=edge_weights)
+        else:
+            pred_loss = self.loss_func(pos_score, neg_score)
 
         # add regularization loss to all parameters to avoid the unused parameter errors
         reg_loss = th.tensor(0.).to(pred_loss.device)
@@ -143,7 +200,59 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
             reg_loss += d_para.square().sum()
 
         # weighted addition to the total loss
-        return pred_loss + alpha_l2norm * reg_loss
+        total_loss = pred_loss + alpha_l2norm * reg_loss
+        if self.ground_ntype is not None and self.ground_method == "reconstruct":
+            total_loss = total_loss + self.ground_coef * recon_loss.to(pred_loss.device)
+        return total_loss
+
+    def apply_ground_to_embeddings(self, emb, data, device):
+        """ Post-process full-graph embeddings for the 'freeze' grounding method.
+
+        During inference, the GNN produces embeddings for all node types. For
+        ``ground_method="freeze"``, this method replaces the ``ground_ntype`` embeddings
+        with the input (pre-GNN) embeddings so that inference is consistent with training.
+
+        Parameters
+        ----------
+        emb : dict of Tensor
+            GNN embeddings keyed by node type.
+        data : GSgnnData
+            The graph dataset (used to access features and the graph).
+        device : torch.device
+            Device for computation.
+
+        Returns
+        -------
+        dict of Tensor
+            Updated embeddings with ``ground_ntype`` replaced by input embeddings
+            (if applicable).
+        """
+        if self.ground_ntype is None or self.ground_method != "freeze":
+            return emb
+        if self.ground_ntype not in emb:
+            return emb
+
+        from .gnn import compute_node_input_embeddings  # local import to avoid circularity
+        input_embs = compute_node_input_embeddings(
+            data.g, batch_size=1024,
+            model=self.node_input_encoder,
+            task_tracker=None,
+            feat_field=data.node_feat_field,
+            target_ntypes=[self.ground_ntype])
+
+        if self.ground_ntype in input_embs:
+            gnd_inp = input_embs[self.ground_ntype]
+            gnd_out = emb[self.ground_ntype]
+            if gnd_inp.shape[-1] != gnd_out.shape[-1]:
+                logging.warning(
+                    "Grounding skipped for '%s' during inference: "
+                    "input dim %d != hidden dim %d.",
+                    self.ground_ntype, gnd_inp.shape[-1], gnd_out.shape[-1])
+                return emb
+            emb = dict(emb)  # shallow copy to avoid mutating the original
+            emb[self.ground_ntype] = gnd_inp.to(device)
+
+        return emb
 
 def lp_mini_batch_predict(model, emb, loader, device, return_batch_lengths=False):
     """ Perform mini-batch prediction for link prediction and return rankings

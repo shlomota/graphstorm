@@ -935,16 +935,21 @@ def create_builtin_lp_decoder(g, decoder_input_dim, config, train_task):
         # TODO: Support decoder norm for lp decoders when required.
         logging.warning("Decoder norm (batch norm or layer norm) is not supported"
                         "for link prediction decoders.")
+    use_contrastive = config.lp_loss_func == BUILTIN_LP_LOSS_CONTRASTIVELOSS
+    has_edge_weight = config.lp_edge_weight_for_loss is not None
+
     if config.lp_decoder_type == BUILTIN_LP_DOT_DECODER:
         # if the training set only contains one edge type or it is specified in the arguments,
         # we use dot product as the score function.
         if get_rank() == 0:
             logging.debug('use dot product for single-etype task.')
             logging.debug("Using inner product objective for supervision")
-        if config.lp_edge_weight_for_loss is None:
-            decoder = LinkPredictContrastiveDotDecoder(decoder_input_dim) \
-                if config.lp_loss_func == BUILTIN_LP_LOSS_CONTRASTIVELOSS else \
-                LinkPredictDotDecoder(decoder_input_dim)
+        if use_contrastive:
+            # For contrastive loss, always use contrastive decoder.
+            # Edge weights are handled by the loss function, not the decoder.
+            decoder = LinkPredictContrastiveDotDecoder(decoder_input_dim)
+        elif not has_edge_weight:
+            decoder = LinkPredictDotDecoder(decoder_input_dim)
         else:
             decoder = LinkPredictWeightedDotDecoder(decoder_input_dim,
                                                     config.lp_edge_weight_for_loss)
@@ -954,14 +959,14 @@ def create_builtin_lp_decoder(g, decoder_input_dim, config, train_task):
 
         # default gamma for distmult is 12.
         gamma = config.gamma if config.gamma is not None else 12.
-        if config.lp_edge_weight_for_loss is None:
+        if use_contrastive:
             decoder = LinkPredictContrastiveDistMultDecoder(g.canonical_etypes,
                                                             decoder_input_dim,
-                                                            gamma) \
-                if config.lp_loss_func == BUILTIN_LP_LOSS_CONTRASTIVELOSS else \
-                LinkPredictDistMultDecoder(g.canonical_etypes,
-                                           decoder_input_dim,
-                                           gamma)
+                                                            gamma)
+        elif not has_edge_weight:
+            decoder = LinkPredictDistMultDecoder(g.canonical_etypes,
+                                                 decoder_input_dim,
+                                                 gamma)
         else:
             decoder = LinkPredictWeightedDistMultDecoder(g.canonical_etypes,
                                                          decoder_input_dim,
@@ -973,14 +978,14 @@ def create_builtin_lp_decoder(g, decoder_input_dim, config, train_task):
 
         # default gamma for RotatE is 12.
         gamma = config.gamma if config.gamma is not None else 12.
-        if config.lp_edge_weight_for_loss is None:
+        if use_contrastive:
             decoder = LinkPredictContrastiveRotatEDecoder(g.canonical_etypes,
                                                           decoder_input_dim,
-                                                          gamma) \
-                if config.lp_loss_func == BUILTIN_LP_LOSS_CONTRASTIVELOSS else \
-                LinkPredictRotatEDecoder(g.canonical_etypes,
-                                         decoder_input_dim,
-                                         gamma)
+                                                          gamma)
+        elif not has_edge_weight:
+            decoder = LinkPredictRotatEDecoder(g.canonical_etypes,
+                                               decoder_input_dim,
+                                               gamma)
         else:
             decoder = LinkPredictWeightedRotatEDecoder(g.canonical_etypes,
                                                        decoder_input_dim,
@@ -994,16 +999,16 @@ def create_builtin_lp_decoder(g, decoder_input_dim, config, train_task):
         gamma = config.gamma if config.gamma is not None else 12.
 
         score_norm = 'l1' if config.lp_decoder_type == BUILTIN_LP_TRANSE_L1_DECODER else 'l2'
-        if config.lp_edge_weight_for_loss is None:
+        if use_contrastive:
             decoder = LinkPredictContrastiveTransEDecoder(g.canonical_etypes,
                                                           decoder_input_dim,
                                                           gamma,
-                                                          score_norm) \
-                if config.lp_loss_func == BUILTIN_LP_LOSS_CONTRASTIVELOSS else \
-                LinkPredictTransEDecoder(g.canonical_etypes,
-                                         decoder_input_dim,
-                                         gamma,
-                                         score_norm)
+                                                          score_norm)
+        elif not has_edge_weight:
+            decoder = LinkPredictTransEDecoder(g.canonical_etypes,
+                                               decoder_input_dim,
+                                               gamma,
+                                               score_norm)
         else:
             decoder = LinkPredictWeightedTransEDecoder(g.canonical_etypes,
                                                        decoder_input_dim,
@@ -1014,7 +1019,7 @@ def create_builtin_lp_decoder(g, decoder_input_dim, config, train_task):
         raise RuntimeError(
             f"Unknown link prediction decoder type {config.lp_decoder_type}")
 
-    if config.lp_loss_func == BUILTIN_LP_LOSS_CONTRASTIVELOSS:
+    if use_contrastive:
         loss_func = LinkPredictContrastiveLossFunc(config.contrastive_loss_temperature)
     elif config.lp_loss_func == BUILTIN_LP_LOSS_CROSS_ENTROPY:
         if config.lp_edge_weight_for_loss is None:
@@ -1055,7 +1060,10 @@ def create_builtin_lp_model(g, config, train_task):
     GSgnnModel : The model.
     """
     model = GSgnnLinkPredictionModel(config.alpha_l2norm,
-                                     config.lp_embed_normalizer)
+                                     config.lp_embed_normalizer,
+                                     ground_ntype=config.ground_ntype,
+                                     ground_method=config.ground_method,
+                                     ground_coef=config.ground_coef)
     set_encoder(model, g, config, train_task)
     num_train_etype = len(config.train_etype) \
         if config.train_etype is not None \
