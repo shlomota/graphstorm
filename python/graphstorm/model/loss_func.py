@@ -872,11 +872,16 @@ class LinkPredictContrastiveLossFunc(GSLayer):
             # (which are same in pos_graph and neg_graph)
             pscore.append(p_s)
             nscore.append(n_s.reshape(p_s.shape[0], -1))
-            if edge_weights is not None and key in edge_weights:
-                w = edge_weights[key]
-                # Ensure 1-D weight tensor
-                if w.dim() > 1:
-                    w = w.squeeze(-1)
+            if edge_weights is not None:
+                if key in edge_weights:
+                    w = edge_weights[key]
+                    # Ensure 1-D weight tensor
+                    if w.dim() > 1:
+                        w = w.squeeze(-1)
+                else:
+                    # Edge type has no explicit weight; default to 1.0 so it
+                    # contributes uniformly alongside weighted edge types.
+                    w = th.ones(p_s.shape[0], dtype=p_s.dtype, device=p_s.device)
                 weights_list.append(w)
         pscore = th.cat(pscore, dim=0)
         nscore = th.cat(nscore, dim=0)
