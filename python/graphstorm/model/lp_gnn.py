@@ -160,9 +160,15 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
                     encode_embs = dict(gnn_embs)
                     encode_embs[self.ground_ntype] = gnd_inp
                 elif self.ground_method == "reconstruct":
-                    # Use GNN output but add MSE reconstruction loss
+                    # Use GNN output but add MSE reconstruction loss.
+                    # gnd_inp covers ALL input nodes of ground_ntype (seeds +
+                    # their sampled neighborhood). DGL guarantees that within each
+                    # ntype's tensor, seed nodes occupy the first num_dst_nodes rows,
+                    # so gnd_inp[:n_seeds] aligns exactly with gnd_out.
+                    n_seeds = gnd_out.shape[0]
                     encode_embs = gnn_embs
-                    recon_loss = th.nn.functional.mse_loss(gnd_out, gnd_inp.detach())
+                    recon_loss = th.nn.functional.mse_loss(
+                        gnd_out, gnd_inp[:n_seeds].detach())
                 else:
                     raise ValueError(
                         f"Unknown ground_method '{self.ground_method}'. "
