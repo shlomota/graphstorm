@@ -259,7 +259,7 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
                     self.ground_ntype, gnd_inp.shape[-1], gnd_out.shape[-1])
                 return emb
             emb = dict(emb)  # shallow copy to avoid mutating the original
-            emb[self.ground_ntype] = gnd_inp.to(device)
+            emb[self.ground_ntype] = gnd_inp  # DistTensor; device transfer happens on index
 
         return emb
 
