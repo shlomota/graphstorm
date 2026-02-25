@@ -97,11 +97,24 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
             The alpha for L2 normalization.
         embed_norm_method: str
             Node embedding normalization method
+        node_embed_grounding_ntype: str, optional
+            Node type to ground (keep close to input embeddings). Default: None.
+        node_embed_grounding_method: str, optional
+            Grounding method: "freeze" (bypass GNN) or "reconstruct" (add MSE loss).
+            Default: "freeze".
+        node_embed_grounding_lambda: float, optional
+            Weight for reconstruction loss when using "reconstruct" method. Default: 0.1.
     """
-    def __init__(self, alpha_l2norm, embed_norm_method=None):
+    def __init__(self, alpha_l2norm, embed_norm_method=None,
+                 node_embed_grounding_ntype=None,
+                 node_embed_grounding_method="freeze",
+                 node_embed_grounding_lambda=0.1):
         super(GSgnnLinkPredictionModel, self).__init__()
         self.alpha_l2norm = alpha_l2norm
         self.embed_norm_method = embed_norm_method
+        self.node_embed_grounding_ntype = node_embed_grounding_ntype
+        self.node_embed_grounding_method = node_embed_grounding_method
+        self.node_embed_grounding_lambda = node_embed_grounding_lambda
 
     def normalize_node_embs(self, embs):
         return normalize_node_embs(embs, self.embed_norm_method)
@@ -119,14 +132,69 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
         
         .. versionchanged:: 0.5.0
             Add ``edge_weight_field`` parameter to support edge weights with contrastive loss.
+            Add node embedding grounding support with "freeze" and "reconstruct" methods.
         """
         alpha_l2norm = self.alpha_l2norm
+        reconstruction_loss = th.tensor(0.)
+        
         if blocks is None or len(blocks) == 0:
             # no GNN message passing, just compute node embeddings
             encode_embs = self.comput_input_embed(input_nodes, node_feats)
         else:
+            # Compute input embeddings first
+            input_embs = self.comput_input_embed(input_nodes, node_feats)
+            
             # has GNN encoder, compute node embedding, or optional edge embeddings
-            encode_embs = self.compute_embed_step(blocks, node_feats, input_nodes, edge_feats)
+            gnn_embs = self.compute_embed_step(blocks, node_feats, input_nodes, edge_feats)
+            
+            # Apply node embedding grounding if configured
+            if self.node_embed_grounding_ntype is not None:
+                grounding_ntype = self.node_embed_grounding_ntype
+                
+                # Check if grounding is applicable
+                if grounding_ntype in gnn_embs and grounding_ntype in input_embs:
+                    input_dim = input_embs[grounding_ntype].shape[-1]
+                    output_dim = gnn_embs[grounding_ntype].shape[-1]
+                    
+                    if input_dim != output_dim:
+                        # Dimension mismatch - log warning and skip grounding
+                        import logging
+                        logging.warning(
+                            f"Node embedding grounding skipped for '{grounding_ntype}': "
+                            f"input dimension ({input_dim}) != hidden dimension ({output_dim}). "
+                            f"Grounding only works when input and hidden dimensions match."
+                        )
+                        encode_embs = gnn_embs
+                    else:
+                        # Dimensions match - apply grounding
+                        if self.node_embed_grounding_method == "freeze":
+                            # Method 1: Replace GNN output with input embeddings (bypass GNN)
+                            encode_embs = {}
+                            for ntype in gnn_embs:
+                                if ntype == grounding_ntype:
+                                    encode_embs[ntype] = input_embs[ntype]
+                                else:
+                                    encode_embs[ntype] = gnn_embs[ntype]
+                        elif self.node_embed_grounding_method == "reconstruct":
+                            # Method 2: Add reconstruction loss
+                            encode_embs = gnn_embs
+                            query_output = gnn_embs[grounding_ntype]
+                            query_input = input_embs[grounding_ntype]
+                            reconstruction_loss = th.nn.functional.mse_loss(query_output, query_input)
+                        else:
+                            # Unknown method - use GNN embeddings as-is
+                            import logging
+                            logging.warning(
+                                f"Unknown grounding method '{self.node_embed_grounding_method}'. "
+                                f"Valid options: 'freeze', 'reconstruct'. Using GNN embeddings."
+                            )
+                            encode_embs = gnn_embs
+                else:
+                    # Grounding node type not found in embeddings
+                    encode_embs = gnn_embs
+            else:
+                # No grounding configured
+                encode_embs = gnn_embs
 
         # Call emb normalization.
         encode_embs = self.normalize_node_embs(encode_embs)
@@ -166,8 +234,18 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
         for d_para in self.get_dense_params():
             reg_loss += d_para.square().sum()
 
+        # Ensure reconstruction_loss is on the same device
+        if not reconstruction_loss.is_cuda and pred_loss.is_cuda:
+            reconstruction_loss = reconstruction_loss.to(pred_loss.device)
+
         # weighted addition to the total loss
-        return pred_loss + alpha_l2norm * reg_loss
+        total_loss = pred_loss + alpha_l2norm * reg_loss
+        
+        # Add reconstruction loss if using "reconstruct" method
+        if self.node_embed_grounding_method == "reconstruct" and reconstruction_loss.item() > 0:
+            total_loss = total_loss + self.node_embed_grounding_lambda * reconstruction_loss
+        
+        return total_loss
 
 def lp_mini_batch_predict(model, emb, loader, device, return_batch_lengths=False):
     """ Perform mini-batch prediction for link prediction and return rankings

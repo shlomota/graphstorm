@@ -3024,6 +3024,59 @@ class GSConfig:
         return None
 
     @property
+    def node_embed_grounding_ntype(self):
+        """ Node type to ground (keep close to input embeddings).
+            
+            Grounding keeps the specified node type's embeddings close to their input
+            embeddings, which is useful when you want to preserve pre-trained features
+            (e.g., text embeddings) without letting GNN layers modify them too much.
+            
+            Only works when input feature dimension matches hidden dimension.
+            Default is None (no grounding).
+        """
+        # pylint: disable=no-member
+        if hasattr(self, "_node_embed_grounding_ntype"):
+            assert self.task_type == BUILTIN_TASK_LINK_PREDICTION, \
+                "Node embedding grounding only works with link prediction"
+            return self._node_embed_grounding_ntype
+        return None
+
+    @property
+    def node_embed_grounding_method(self):
+        """ Grounding method for node embeddings.
+            
+            Two methods are supported:
+            - "freeze": Replace GNN output with input embeddings (bypass GNN layers)
+            - "reconstruct": Add MSE reconstruction loss to keep embeddings close
+            
+            Default is "freeze".
+        """
+        # pylint: disable=no-member
+        if hasattr(self, "_node_embed_grounding_method"):
+            method = self._node_embed_grounding_method.lower()
+            assert method in ["freeze", "reconstruct"], \
+                f"Node embedding grounding method must be 'freeze' or 'reconstruct', got {method}"
+            return method
+        return "freeze"
+
+    @property
+    def node_embed_grounding_lambda(self):
+        """ Weight for reconstruction loss when using "reconstruct" grounding method.
+            
+            This controls how strongly the model is encouraged to keep the grounded
+            node type's embeddings close to their input embeddings.
+            
+            Default is 0.1.
+        """
+        # pylint: disable=no-member
+        if hasattr(self, "_node_embed_grounding_lambda"):
+            lambda_val = float(self._node_embed_grounding_lambda)
+            assert lambda_val >= 0.0, \
+                f"Node embedding grounding lambda must be non-negative, got {lambda_val}"
+            return lambda_val
+        return 0.1
+
+    @property
     def train_etype(self):
         """ The list of canonical edge types that will be added as training target.
             If not provided, all edge types will be used as training target. A canonical
@@ -3892,6 +3945,16 @@ def _add_link_prediction_args(parser):
             "if all edge types use the same number of hard negatives."
             "2) '--num-train-hard-negatives query,adds,asin:5 query,clicks,asin:10 ...'"
             "Different edge types have different number of hard negatives.")
+    group.add_argument("--node-embed-grounding-ntype", type=str, default=argparse.SUPPRESS,
+            help="Node type to ground (keep close to input embeddings). "
+            "For example: '--node-embed-grounding-ntype query'. "
+            "Only works when input feature dimension matches hidden dimension.")
+    group.add_argument("--node-embed-grounding-method", type=str, default=argparse.SUPPRESS,
+            help="Grounding method: 'freeze' (bypass GNN layers) or "
+            "'reconstruct' (add MSE reconstruction loss). Default: 'freeze'.")
+    group.add_argument("--node-embed-grounding-lambda", type=float, default=argparse.SUPPRESS,
+            help="Weight for reconstruction loss when using 'reconstruct' method. "
+            "Default: 0.1.")
 
     return parser
 

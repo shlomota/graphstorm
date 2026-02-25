@@ -1055,7 +1055,10 @@ def create_builtin_lp_model(g, config, train_task):
     GSgnnModel : The model.
     """
     model = GSgnnLinkPredictionModel(config.alpha_l2norm,
-                                     config.lp_embed_normalizer)
+                                     config.lp_embed_normalizer,
+                                     config.node_embed_grounding_ntype,
+                                     config.node_embed_grounding_method,
+                                     config.node_embed_grounding_lambda)
     set_encoder(model, g, config, train_task)
     num_train_etype = len(config.train_etype) \
         if config.train_etype is not None \

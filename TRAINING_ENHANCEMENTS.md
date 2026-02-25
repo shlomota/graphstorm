@@ -45,7 +45,95 @@ INFO:root:Epoch 00000 | Batch 060 | Train Loss: 4.5752 | Time: 54.5699
 INFO:root:Reached max_steps=60, stopping training
 ```
 
-## 2. Edge Weights for Contrastive Loss
+## 2. Node Embedding Grounding
+
+### Overview
+Node embedding grounding keeps certain node types (like "query") close to their input embeddings during training. This is useful when you want to preserve pre-trained features (e.g., text embeddings from BERT) without letting GNN layers modify them too much.
+
+Two grounding methods are supported:
+- **freeze**: Replace GNN output with input embeddings (bypass GNN layers completely)
+- **reconstruct**: Add MSE reconstruction loss to encourage embeddings to stay close to inputs
+
+### Requirements
+- Only works when input feature dimension matches hidden dimension
+- If dimensions don't match, grounding is automatically disabled with a warning
+
+### Usage
+
+#### Method 1: Freeze (Bypass GNN)
+
+This method completely bypasses GNN layers for the specified node type, using input embeddings directly:
+
+```yaml
+link_prediction:
+  lp_loss_func: contrastive
+  lp_decoder_type: dot_product
+  node_embed_grounding_ntype: "query"
+  node_embed_grounding_method: "freeze"  # Default
+```
+
+#### Method 2: Reconstruct (Add MSE Loss)
+
+This method adds a reconstruction loss term to keep embeddings close to inputs while still allowing some GNN transformation:
+
+```yaml
+link_prediction:
+  lp_loss_func: contrastive
+  lp_decoder_type: dot_product
+  node_embed_grounding_ntype: "query"
+  node_embed_grounding_method: "reconstruct"
+  node_embed_grounding_lambda: 0.1  # Weight for reconstruction loss
+```
+
+### Behavior
+- **freeze method**: Query embeddings = input embeddings (no GNN transformation)
+- **reconstruct method**: Adds `lambda * MSE(output_emb, input_emb)` to the loss
+- Dimension check: Automatically validates input_dim == hidden_dim
+- Warning logged if dimensions don't match (grounding disabled)
+- Works with all contrastive loss decoders
+
+### Example Configuration
+
+Complete example with query grounding:
+
+```yaml
+version: 1.0
+
+gsf:
+  basic:
+    task_type: link_prediction
+    model_encoder_type: rgcn
+    hidden_size: 384  # Must match query input feature dimension
+    num_layers: 2
+    num_epochs: 1
+    batch_size: 16384
+    
+  link_prediction:
+    lp_decoder_type: dot_product
+    lp_loss_func: contrastive
+    contrastive_loss_temperature: 0.1
+    lp_embed_normalizer: "l2_norm"
+    num_negative_edges: 100
+    train_negative_sampler: localjoint
+    
+    # Node embedding grounding
+    node_embed_grounding_ntype: "query"
+    node_embed_grounding_method: "freeze"  # or "reconstruct"
+    node_embed_grounding_lambda: 0.1  # Only used with "reconstruct"
+    
+    target_etype: ["query,engaged,product"]
+    train_etype:
+      - "query,engaged,product"
+      - "product,belongs,brand"
+```
+
+### Use Cases
+
+1. **Preserve text embeddings**: Keep query text embeddings from BERT unchanged
+2. **Prevent overfitting**: Stop GNN from overfitting on small query datasets
+3. **Hybrid approach**: Use "reconstruct" to allow some adaptation while staying close to inputs
+
+## 3. Edge Weights for Contrastive Loss
 
 ### Overview
 Edge weights are now supported with contrastive loss in link prediction tasks. This allows you to:
@@ -117,7 +205,7 @@ gsf:
       - "product,belongs,brand"
 ```
 
-## 3. Docker Environment Updates
+## 4. Docker Environment Updates
 
 The Docker environment has been updated to:
 - PyTorch 2.4.0 (from 2.3.0)
