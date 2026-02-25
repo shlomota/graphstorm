@@ -146,7 +146,9 @@ def main(config_args):
                 save_perf_results_path=config.save_perf_results_path,
                 freeze_input_layer_epochs=config.freeze_lm_encoder_epochs,
                 max_grad_norm=config.max_grad_norm,
-                grad_norm_type=config.grad_norm_type)
+                grad_norm_type=config.grad_norm_type,
+                edge_weight_field=config.lp_edge_weight_for_loss,
+                max_steps=config.max_steps)
 
     if config.save_embed_path is not None:
         assert config.edge_feat_name is None, 'GraphStorm node prediction training command ' + \

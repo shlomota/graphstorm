@@ -840,7 +840,7 @@ class LinkPredictContrastiveLossFunc(GSLayer):
         self._temp = temp
         self._debug_print = True
 
-    def forward(self, pos_score, neg_score):
+    def forward(self, pos_score, neg_score, edge_weights=None):
         """ The forward function.
 
         Parameters
@@ -849,6 +849,10 @@ class LinkPredictContrastiveLossFunc(GSLayer):
             The scores for positive edges of each edge type.
         neg_score: dict of Tensor
             The scores for negative edges of each edge type.
+        edge_weights: dict of Tensor, optional
+            The weights for positive edges of each edge type. If provided,
+            these weights are used to scale the loss contribution of each
+            positive edge. Default: None.
 
         Returns
         -------
@@ -857,6 +861,7 @@ class LinkPredictContrastiveLossFunc(GSLayer):
         """
         pscore = []
         nscore = []
+        weights = []
         for key, p_s in pos_score.items():
             assert key in neg_score, \
                 f"Negative scores of {key} must exists"
@@ -866,6 +871,22 @@ class LinkPredictContrastiveLossFunc(GSLayer):
             # (which are same in pos_graph and neg_graph)
             pscore.append(p_s)
             nscore.append(n_s.reshape(p_s.shape[0], -1))
+            
+            # Collect edge weights if provided
+            if edge_weights is not None and key in edge_weights:
+                w = edge_weights[key]
+                # Validate edge weights
+                if th.isnan(w).any():
+                    raise ValueError(f"Edge weights for {key} contain NaN values")
+                if th.isinf(w).any():
+                    raise ValueError(f"Edge weights for {key} contain infinite values")
+                if (w < 0).any():
+                    raise ValueError(f"Edge weights for {key} must be non-negative")
+                weights.append(w)
+            elif edge_weights is not None:
+                # If edge_weights dict provided but this etype not in it, use ones
+                weights.append(th.ones_like(p_s))
+                
         pscore = th.cat(pscore, dim=0)
         nscore = th.cat(nscore, dim=0)
 
@@ -875,7 +896,15 @@ class LinkPredictContrastiveLossFunc(GSLayer):
 
         exp_logits = th.exp(score)
         log_prob = pscore - th.log(exp_logits.sum(1))
-        loss = -log_prob.mean()
+        
+        # Apply edge weights if provided
+        if edge_weights is not None and len(weights) > 0:
+            weights = th.cat(weights, dim=0)
+            # Normalize weights to prevent scale issues
+            weights_normalized = weights / weights.mean()
+            loss = -(log_prob * weights_normalized).mean()
+        else:
+            loss = -log_prob.mean()
 
         # For debugging abnormal loss values.
         if self._debug_print and get_rank() == 0:

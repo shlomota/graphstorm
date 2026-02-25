@@ -2054,6 +2054,24 @@ class GSConfig:
         return 0
 
     @property
+    def max_steps(self):
+        """ Maximum number of training steps before stopping.
+            
+            If provided, training will stop after this many steps regardless of
+            epoch completion. Must be a positive integer if given. Default is None.
+            
+            Returns
+            -------
+            int or None
+                Maximum steps, or None for full epoch training
+        """
+        if hasattr(self, "_max_steps"):
+            assert isinstance(self._max_steps, int) and self._max_steps > 0, \
+                f"max_steps must be a positive integer, got {self._max_steps}"
+            return self._max_steps
+        return None
+
+    @property
     def batch_size(self):
         """ Mini-batch size. It defines the batch size of each trainer. The global batch
             size equals to the number of trainers multiply the batch_size. For example,
@@ -2840,13 +2858,6 @@ class GSConfig:
             assert self.task_type == BUILTIN_TASK_LINK_PREDICTION, \
                 "Edge weight for loss only works with link prediction"
 
-            if self.lp_loss_func in [ BUILTIN_LP_LOSS_CONTRASTIVELOSS]:
-                logging.warning("lp_edge_weight_for_loss does not work with "
-                                "%s loss in link prediction."
-                                "Disable edge weight for link prediction loss.",
-                                BUILTIN_LP_LOSS_CONTRASTIVELOSS)
-                return None
-
             edge_weights = self._lp_edge_weight_for_loss
             if len(edge_weights) == 1 and \
                 ":" not in edge_weights[0]:
@@ -3600,6 +3611,9 @@ def _add_hyperparam_args(parser):
             help="learning rate")
     group.add_argument("-e", "--num-epochs", type=int, default=argparse.SUPPRESS,
             help="number of training epochs")
+    group.add_argument("--max-steps", type=int, default=argparse.SUPPRESS,
+            help="Maximum number of training steps. Training stops after this many steps, "
+                 "even if epoch is incomplete. Must be a positive integer.")
     group.add_argument("--batch-size", type=int, default=argparse.SUPPRESS,
             help="Mini-batch size. Must be larger than 0")
     group.add_argument("--sparse-optimizer-lr", type=float, default=argparse.SUPPRESS,

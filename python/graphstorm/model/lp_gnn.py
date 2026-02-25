@@ -109,12 +109,16 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
     # pylint: disable=unused-argument
     def forward(self, blocks, pos_graph,
         neg_graph, node_feats, edge_feats,
-        pos_edge_feats=None, neg_edge_feats=None, input_nodes=None):
+        pos_edge_feats=None, neg_edge_feats=None, input_nodes=None,
+        edge_weight_field=None):
         """ The forward function for link prediction.
 
         .. versionchanged:: 0.4.0
             Add ``edge_feats`` into ``compute_embed_step`` in v0.4.0 to use edge features
             in message passing computation.
+        
+        .. versionchanged:: 0.5.0
+            Add ``edge_weight_field`` parameter to support edge weights with contrastive loss.
         """
         alpha_l2norm = self.alpha_l2norm
         if blocks is None or len(blocks) == 0:
@@ -134,7 +138,27 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
         assert pos_score.keys() == neg_score.keys(), \
             "Positive scores and Negative scores must have edges of same" \
             f"edge types, but get {pos_score.keys()} and {neg_score.keys()}"
-        pred_loss = self.loss_func(pos_score, neg_score)
+        
+        # Extract edge weights if configured and available
+        edge_weights = None
+        if edge_weight_field is not None and pos_edge_feats is not None:
+            edge_weights = {}
+            if isinstance(edge_weight_field, str):
+                # Global weight field name
+                for etype in pos_score.keys():
+                    if etype in pos_edge_feats and edge_weight_field in pos_edge_feats[etype]:
+                        edge_weights[etype] = pos_edge_feats[etype][edge_weight_field]
+            elif isinstance(edge_weight_field, dict):
+                # Per-edge-type weight field names
+                for etype, field_names in edge_weight_field.items():
+                    if etype in pos_edge_feats and field_names[0] in pos_edge_feats[etype]:
+                        edge_weights[etype] = pos_edge_feats[etype][field_names[0]]
+            
+            # Only pass edge_weights if we found any
+            if len(edge_weights) == 0:
+                edge_weights = None
+        
+        pred_loss = self.loss_func(pos_score, neg_score, edge_weights)
 
         # add regularization loss to all parameters to avoid the unused parameter errors
         reg_loss = th.tensor(0.).to(pred_loss.device)

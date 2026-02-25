@@ -84,6 +84,7 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
     def fit(self, train_loader, num_epochs,
             val_loader=None,
             test_loader=None,
+            max_steps=None,
             use_mini_batch_infer=True,
             save_model_path=None,
             save_model_frequency=-1,
@@ -91,7 +92,8 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
             edge_mask_for_gnn_embeddings='train_mask',
             freeze_input_layer_epochs=0,
             max_grad_norm=None,
-            grad_norm_type=2.0):
+            grad_norm_type=2.0,
+            edge_weight_field=None):
         """ Fit function for link prediction.
 
         This function performs the training for the given link prediction model.
@@ -116,6 +118,9 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
             LinkPrediction dataloader for mini-batch sampling the validation set. Default: None.
         test_loader: GSgnnLinkPredictionDataLoader
             LinkPrediction dataloader for mini-batch sampling the test set. Default: None.
+        max_steps: int, optional
+            Maximum number of training steps. If provided, training stops after this many
+            steps regardless of epoch completion. Default: None.
         use_mini_batch_infer: bool
             Whether to use mini-batch for inference. Default: True.
         save_model_path: str
@@ -146,6 +151,10 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
             in `torch.nn.utils.clip_grad_norm_ <https://pytorch.org/docs/2.1/generated/
             torch.nn.utils.clip_grad_norm_.html#torch.nn.utils.clip_grad_norm_>`__.
             Default: 2.0.
+        edge_weight_field: str or dict, optional
+            Edge feature field name(s) for edge weights used with contrastive loss.
+            Can be a global field name (str) or per-edge-type field names (dict).
+            Default: None.
         """
         if not use_mini_batch_infer:
             assert isinstance(self._model, GSgnnModel), \
@@ -225,7 +234,8 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
                              node_feats=node_input_feats,
                              edge_feats=edge_input_feats,
                              pos_edge_feats=pos_graph_feats,
-                             input_nodes=input_nodes)
+                             input_nodes=input_nodes,
+                             edge_weight_field=edge_weight_field)
                 rt_profiler.record('train_forward')
 
                 self.optimizer.zero_grad()
@@ -270,6 +280,14 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
 
                 batch_tic = time.time()
                 rt_profiler.record('train_eval')
+                
+                # Check if max_steps limit reached
+                if max_steps is not None and total_steps >= max_steps:
+                    if get_rank() == 0:
+                        logging.info("Reached max_steps=%d, stopping training", max_steps)
+                    early_stop = True
+                    break
+                
                 # early_stop, exit current interation.
                 if early_stop is True:
                     break
