@@ -211,7 +211,7 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
             total_loss = total_loss + self.ground_coef * recon_loss.to(pred_loss.device)
         return total_loss
 
-    def apply_ground_to_embeddings(self, emb, data, device):
+    def apply_ground_to_embeddings(self, emb, data, device, batch_size=1024):
         """ Post-process full-graph embeddings for the 'freeze' grounding method.
 
         During inference, the GNN produces embeddings for all node types. For
@@ -226,6 +226,9 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
             The graph dataset (used to access features and the graph).
         device : torch.device
             Device for computation.
+        batch_size : int
+            Batch size for computing input embeddings. Should match the batch_size
+            used in do_mini_batch_inference / do_full_graph_inference. Default: 1024.
 
         Returns
         -------
@@ -238,10 +241,10 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
         if self.ground_ntype not in emb:
             return emb
 
-        from .gnn import compute_node_input_embeddings  # local import to avoid circularity
+        from .embed import compute_node_input_embeddings  # local import to avoid circularity
         input_embs = compute_node_input_embeddings(
-            data.g, batch_size=1024,
-            model=self.node_input_encoder,
+            data.g, batch_size,
+            embed_layer=self.node_input_encoder,
             task_tracker=None,
             feat_field=data.node_feat_field,
             target_ntypes=[self.ground_ntype])
