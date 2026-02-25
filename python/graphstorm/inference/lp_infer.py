@@ -92,6 +92,14 @@ class GSgnnLinkPredictionInferrer(GSInferrer):
                                            task_tracker=self.task_tracker)
         sys_tracker.check('compute embeddings')
         device = self.device
+
+        # Apply grounding post-processing for 'freeze' method:
+        # replace ground_ntype embeddings with input embeddings so saved
+        # embeddings and evaluation are consistent with training eval.
+        if hasattr(self._model, 'apply_ground_to_embeddings'):
+            embs = self._model.apply_ground_to_embeddings(
+                embs, data, device, batch_size=infer_batch_size)
+
         g = data.g
         if save_embed_path is not None:
             save_gsgnn_embeddings(g,

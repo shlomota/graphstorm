@@ -167,6 +167,11 @@ def main(config_args):
         # TODO(zhengda) we may not want to only use training edges to generate GNN embeddings.
         embeddings = do_full_graph_inference(model, train_data, fanout=config.eval_fanout,
                                              edge_mask="train_mask", task_tracker=tracker)
+        # Apply grounding post-processing for 'freeze' method so saved embeddings
+        # are consistent with what was used during training evaluation.
+        if hasattr(model, 'apply_ground_to_embeddings'):
+            embeddings = model.apply_ground_to_embeddings(
+                embeddings, train_data, get_device())
         save_full_node_embeddings(
             train_data.g,
             config.save_embed_path,
