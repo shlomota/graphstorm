@@ -148,6 +148,7 @@ def initialize(
         local_rank=0,
         use_wholegraph=False,
         use_graphbolt=False,
+        backend_timeout_seconds=None,
     ):
     """ Initialize distributed training and inference context. For GraphStorm Standalone mode,
     no argument is needed. For Distributed mode, users need to provide an IP address list file.
@@ -184,6 +185,11 @@ def initialize(
         Default: False.
 
         .. versionadded:: 0.4.0
+    backend_timeout_seconds: int
+        Timeout in seconds for distributed backend operations.
+        Default: 1800 (30 minutes) for gloo, 600 (10 minutes) for nccl.
+
+        .. versionadded:: 0.5.0
     """
     dgl_version = importlib.metadata.version('dgl')
     if version.parse(dgl_version) >= version.parse("2.1.0"):
@@ -204,7 +210,12 @@ def initialize(
         )
     assert th.cuda.is_available() or backend == "gloo", "Gloo backend required for a CPU setting."
     if ip_config is not None:
-        th.distributed.init_process_group(backend=backend)
+        if backend_timeout_seconds is not None:
+            import datetime
+            timeout = datetime.timedelta(seconds=backend_timeout_seconds)
+            th.distributed.init_process_group(backend=backend, timeout=timeout)
+        else:
+            th.distributed.init_process_group(backend=backend)
         # Use wholegraph for feature and label fetching
         if use_wholegraph:
             from .wholegraph import init_wholegraph

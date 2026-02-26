@@ -44,7 +44,8 @@ def main(config_args):
     gs.initialize(ip_config=config.ip_config, backend=config.backend,
                   local_rank=config.local_rank,
                   use_wholegraph=config.use_wholegraph_embed or use_wg_feats,
-                  use_graphbolt=config.use_graphbolt)
+                  use_graphbolt=config.use_graphbolt,
+                  backend_timeout_seconds=config.backend_timeout_seconds)
     rt_profiler.init(config.profile_path, rank=gs.get_rank())
     sys_tracker.init(config.verbose, rank=gs.get_rank())
     train_data = GSgnnData(config.part_config,

@@ -1091,6 +1091,16 @@ class GSConfig:
         return "gloo"
 
     @property
+    def backend_timeout_seconds(self):
+        """ Timeout in seconds for distributed backend operations.
+            Default is 1800 (30 minutes) for gloo, 600 (10 minutes) for nccl.
+        """
+        # pylint: disable=no-member
+        if hasattr(self, "_backend_timeout_seconds"):
+            return self._backend_timeout_seconds
+        return None
+
+    @property
     def ip_config(self):
         """ IP config file that contains all IP addresses of instances in a cluster.
             In the file, each line stores one IP address. Default is None.

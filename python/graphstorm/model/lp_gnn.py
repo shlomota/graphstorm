@@ -165,10 +165,13 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
                     encode_embs = dict(gnn_embs)
                     encode_embs[self.ground_ntype] = gnd_feat
                 elif self.ground_method == "reconstruct":
-                    # Use GNN output but add MSE loss pulling it toward raw features.
+                    # Use GNN output but add cosine loss pulling it toward raw features.
                     encode_embs = gnn_embs
-                    recon_loss = th.nn.functional.mse_loss(
-                        gnd_out, gnd_feat.detach())
+                    # Normalize both to unit vectors for cosine similarity
+                    gnd_out_norm = th.nn.functional.normalize(gnd_out, p=2, dim=-1)
+                    gnd_feat_norm = th.nn.functional.normalize(gnd_feat.detach(), p=2, dim=-1)
+                    # Negative cosine similarity (minimize to maximize similarity)
+                    recon_loss = -(gnd_out_norm * gnd_feat_norm).sum(dim=-1).mean()
                 else:
                     raise ValueError(
                         f"Unknown ground_method '{self.ground_method}'. "
