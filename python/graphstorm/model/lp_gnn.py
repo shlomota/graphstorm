@@ -140,35 +140,35 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
             # no GNN message passing, just compute node embeddings
             encode_embs = self.comput_input_embed(input_nodes, node_feats)
         elif self.ground_ntype is not None:
-            # Grounding: always need both input and GNN embeddings
-            input_embs = self.comput_input_embed(input_nodes, node_feats)
+            # Grounding: use raw input features (e.g. pre-computed MiniLM embeddings)
+            # directly, bypassing the learned input encoder projection.  This keeps
+            # the saved embeddings in the same space as external queries so callers
+            # can run MiniLM on a new query and search immediately without any
+            # additional learned transform.
             gnn_embs = self.compute_embed_step(blocks, node_feats, input_nodes, edge_feats)
 
-            if self.ground_ntype in gnn_embs and self.ground_ntype in input_embs:
+            if self.ground_ntype in gnn_embs and self.ground_ntype in node_feats:
                 gnd_out = gnn_embs[self.ground_ntype]
-                gnd_inp = input_embs[self.ground_ntype]
-                if gnd_out.shape[-1] != gnd_inp.shape[-1]:
+                n_seeds = gnd_out.shape[0]
+                # node_feats[ground_ntype] covers all input nodes; seed nodes are first.
+                gnd_feat = node_feats[self.ground_ntype][:n_seeds]
+                if gnd_out.shape[-1] != gnd_feat.shape[-1]:
                     if not self._ground_dim_warned:
                         logging.warning(
-                            "Grounding skipped for '%s': input dim %d != hidden dim %d. "
+                            "Grounding skipped for '%s': feat dim %d != hidden dim %d. "
                             "Grounding only supported when dimensions match.",
-                            self.ground_ntype, gnd_inp.shape[-1], gnd_out.shape[-1])
+                            self.ground_ntype, gnd_feat.shape[-1], gnd_out.shape[-1])
                         self._ground_dim_warned = True
                     encode_embs = gnn_embs
                 elif self.ground_method == "freeze":
-                    # Replace GNN output with input embedding for ground_ntype
+                    # Replace GNN output with raw input features for ground_ntype
                     encode_embs = dict(gnn_embs)
-                    encode_embs[self.ground_ntype] = gnd_inp
+                    encode_embs[self.ground_ntype] = gnd_feat
                 elif self.ground_method == "reconstruct":
-                    # Use GNN output but add MSE reconstruction loss.
-                    # gnd_inp covers ALL input nodes of ground_ntype (seeds +
-                    # their sampled neighborhood). DGL guarantees that within each
-                    # ntype's tensor, seed nodes occupy the first num_dst_nodes rows,
-                    # so gnd_inp[:n_seeds] aligns exactly with gnd_out.
-                    n_seeds = gnd_out.shape[0]
+                    # Use GNN output but add MSE loss pulling it toward raw features.
                     encode_embs = gnn_embs
                     recon_loss = th.nn.functional.mse_loss(
-                        gnd_out, gnd_inp[:n_seeds].detach())
+                        gnd_out, gnd_feat.detach())
                 else:
                     raise ValueError(
                         f"Unknown ground_method '{self.ground_method}'. "
@@ -214,26 +214,27 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
     def apply_ground_to_embeddings(self, emb, data, device, batch_size=1024):
         """ Post-process full-graph embeddings for the 'freeze' grounding method.
 
-        During inference, the GNN produces embeddings for all node types. For
-        ``ground_method="freeze"``, this method replaces the ``ground_ntype`` embeddings
-        with the input (pre-GNN) embeddings so that inference is consistent with training.
+        Replaces the ``ground_ntype`` GNN embeddings with the raw input features
+        (e.g. pre-computed MiniLM embeddings stored as 'feat') so that the saved
+        embeddings live in the same space as external queries.  No additional
+        distributed inference pass is required — the features are read directly
+        from the distributed graph's node data.
 
         Parameters
         ----------
         emb : dict of Tensor
             GNN embeddings keyed by node type.
         data : GSgnnData
-            The graph dataset (used to access features and the graph).
+            The graph dataset.
         device : torch.device
-            Device for computation.
+            Unused; kept for API compatibility.
         batch_size : int
-            Batch size for computing input embeddings. Should match the batch_size
-            used in do_mini_batch_inference / do_full_graph_inference. Default: 1024.
+            Unused; kept for API compatibility.
 
         Returns
         -------
         dict of Tensor
-            Updated embeddings with ``ground_ntype`` replaced by input embeddings
+            Updated embeddings with ``ground_ntype`` replaced by raw node features
             (if applicable).
         """
         if self.ground_ntype is None or self.ground_method != "freeze":
@@ -241,26 +242,32 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
         if self.ground_ntype not in emb:
             return emb
 
-        from .embed import compute_node_input_embeddings  # local import to avoid circularity
-        input_embs = compute_node_input_embeddings(
-            data.g, batch_size,
-            embed_layer=self.node_input_encoder,
-            task_tracker=None,
-            feat_field=data.node_feat_field,
-            target_ntypes=[self.ground_ntype])
+        g = data.g
+        ntype = self.ground_ntype
+        feat_field = data.node_feat_field
+        if isinstance(feat_field, dict):
+            feat_name = feat_field.get(ntype)
+        else:
+            feat_name = feat_field
 
-        if self.ground_ntype in input_embs:
-            gnd_inp = input_embs[self.ground_ntype]
-            gnd_out = emb[self.ground_ntype]
-            if gnd_inp.shape[-1] != gnd_out.shape[-1]:
-                logging.warning(
-                    "Grounding skipped for '%s' during inference: "
-                    "input dim %d != hidden dim %d.",
-                    self.ground_ntype, gnd_inp.shape[-1], gnd_out.shape[-1])
-                return emb
-            emb = dict(emb)  # shallow copy to avoid mutating the original
-            emb[self.ground_ntype] = gnd_inp  # DistTensor; device transfer happens on index
+        if feat_name is None or feat_name not in g.nodes[ntype].data:
+            logging.warning(
+                "Grounding skipped for '%s' during inference: "
+                "raw feature '%s' not found in graph data.",
+                ntype, feat_name)
+            return emb
 
+        gnd_inp = g.nodes[ntype].data[feat_name]  # DistTensor; device transfer on index
+        gnd_out = emb[ntype]
+        if gnd_inp.shape[-1] != gnd_out.shape[-1]:
+            logging.warning(
+                "Grounding skipped for '%s' during inference: "
+                "feat dim %d != hidden dim %d.",
+                ntype, gnd_inp.shape[-1], gnd_out.shape[-1])
+            return emb
+
+        emb = dict(emb)  # shallow copy to avoid mutating the original
+        emb[ntype] = gnd_inp
         return emb
 
 def lp_mini_batch_predict(model, emb, loader, device, return_batch_lengths=False):
