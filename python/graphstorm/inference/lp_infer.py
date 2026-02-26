@@ -94,11 +94,9 @@ class GSgnnLinkPredictionInferrer(GSInferrer):
         device = self.device
 
         # Apply grounding post-processing for 'freeze' method:
-        # replace ground_ntype embeddings with input embeddings so saved
-        # embeddings and evaluation are consistent with training eval.
+        # replace ground_ntype GNN embeddings with raw node features.
         if hasattr(self._model, 'apply_ground_to_embeddings'):
-            embs = self._model.apply_ground_to_embeddings(
-                embs, data, device, batch_size=infer_batch_size)
+            embs = self._model.apply_ground_to_embeddings(embs, data)
 
         g = data.g
         if save_embed_path is not None:

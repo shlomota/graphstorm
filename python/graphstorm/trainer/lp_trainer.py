@@ -379,10 +379,9 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
                                           task_tracker=self.task_tracker)
 
         # Apply grounding post-processing for 'freeze' method:
-        # replace ground_ntype embeddings with input embeddings during inference.
+        # replace ground_ntype GNN embeddings with raw node features.
         if hasattr(model, 'apply_ground_to_embeddings'):
-            emb = model.apply_ground_to_embeddings(emb, data, self.device,
-                                                   batch_size=1024)
+            emb = model.apply_ground_to_embeddings(emb, data)
 
         sys_tracker.check('compute embeddings')
         if val_loader is not None:

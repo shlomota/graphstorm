@@ -211,7 +211,7 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
             total_loss = total_loss + self.ground_coef * recon_loss.to(pred_loss.device)
         return total_loss
 
-    def apply_ground_to_embeddings(self, emb, data, device, batch_size=1024):
+    def apply_ground_to_embeddings(self, emb, data):
         """ Post-process full-graph embeddings for the 'freeze' grounding method.
 
         Replaces the ``ground_ntype`` GNN embeddings with the raw input features
@@ -226,11 +226,6 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
             GNN embeddings keyed by node type.
         data : GSgnnData
             The graph dataset.
-        device : torch.device
-            Unused; kept for API compatibility.
-        batch_size : int
-            Unused; kept for API compatibility.
-
         Returns
         -------
         dict of Tensor
