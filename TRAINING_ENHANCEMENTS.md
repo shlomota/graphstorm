@@ -52,7 +52,7 @@ Node embedding grounding keeps certain node types (like "query") close to their 
 
 Two grounding methods are supported:
 - **freeze**: Replace GNN output with input embeddings (bypass GNN layers completely)
-- **reconstruct**: Add MSE reconstruction loss to encourage embeddings to stay close to inputs
+- **reconstruct**: Add cosine similarity reconstruction loss to encourage embeddings to stay close to inputs
 
 ### Requirements
 - Only works when input feature dimension matches hidden dimension
@@ -72,7 +72,7 @@ link_prediction:
   node_embed_grounding_method: "freeze"  # Default
 ```
 
-#### Method 2: Reconstruct (Add MSE Loss)
+#### Method 2: Reconstruct (Add Cosine Similarity Loss)
 
 This method adds a reconstruction loss term to keep embeddings close to inputs while still allowing some GNN transformation:
 
@@ -87,7 +87,9 @@ link_prediction:
 
 ### Behavior
 - **freeze method**: Query embeddings = input embeddings (no GNN transformation)
-- **reconstruct method**: Adds `lambda * MSE(output_emb, input_emb)` to the loss
+- **reconstruct method**: Adds `lambda * (1 - cosine_similarity(output_emb, input_emb))` to the loss
+  - Loss range: [0, 2] where 0 = perfect alignment, 1 = orthogonal, 2 = opposite
+  - Cosine similarity is scale-invariant and better captures semantic similarity than MSE
 - Dimension check: Automatically validates input_dim == hidden_dim
 - Warning logged if dimensions don't match (grounding disabled)
 - Works with all contrastive loss decoders

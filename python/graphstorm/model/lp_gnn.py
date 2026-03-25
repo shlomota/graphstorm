@@ -176,11 +176,14 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
                                 else:
                                     encode_embs[ntype] = gnn_embs[ntype]
                         elif self.node_embed_grounding_method == "reconstruct":
-                            # Method 2: Add reconstruction loss
+                            # Method 2: Add reconstruction loss using cosine similarity
                             encode_embs = gnn_embs
                             query_output = gnn_embs[grounding_ntype]
                             query_input = input_embs[grounding_ntype]
-                            reconstruction_loss = th.nn.functional.mse_loss(query_output, query_input)
+                            # Use 1 - cosine_similarity as loss (range [0, 2])
+                            # 0 = perfect alignment, 1 = orthogonal, 2 = opposite
+                            cos_sim = th.nn.functional.cosine_similarity(query_output, query_input, dim=-1)
+                            reconstruction_loss = (1 - cos_sim).mean()
                         else:
                             # Unknown method - use GNN embeddings as-is
                             import logging
