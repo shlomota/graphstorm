@@ -16,7 +16,12 @@ limitations under the License.
 
 from typing import Mapping
 
-from graphstorm_processing.constants import HUGGINGFACE_TOKENIZE, HUGGINGFACE_EMB
+from graphstorm_processing.constants import (
+    HUGGINGFACE_TOKENIZE,
+    HUGGINGFACE_EMB,
+    HUGGINGFACE_POOLING_CLS,
+    VALID_HF_POOLING,
+)
 from .feature_config_base import FeatureConfig
 
 
@@ -31,6 +36,10 @@ class HFConfig(FeatureConfig):
         The name of the huggingface lm model.
     max_seq_length: int, required
         The maximal length of the tokenization results.
+    pooling: str, optional
+        Pooling strategy for embedding_hf action. Valid values are ["cls", "mean"].
+        Default is "cls" (use pooler_output, BERT-style).
+        Use "mean" for models like MiniLM or embeddinggemma that lack a pooler head.
     """
 
     def __init__(self, config: Mapping):
@@ -38,6 +47,7 @@ class HFConfig(FeatureConfig):
         self.action = self._transformation_kwargs.get("action")
         self.hf_model = self._transformation_kwargs.get("hf_model")
         self.max_seq_length = self._transformation_kwargs.get("max_seq_length")
+        self.pooling = self._transformation_kwargs.get("pooling", HUGGINGFACE_POOLING_CLS)
 
         self._sanity_check()
 
@@ -53,3 +63,6 @@ class HFConfig(FeatureConfig):
         assert (
             isinstance(self.max_seq_length, int) and self.max_seq_length > 0
         ), f"Expect max_seq_length {self.max_seq_length} be an integer and larger than zero."
+        assert self.pooling in VALID_HF_POOLING, (
+            f"Expect pooling to be one of {VALID_HF_POOLING}, but got '{self.pooling}'"
+        )

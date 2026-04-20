@@ -131,3 +131,59 @@ def test_hf_emb_example(spark: SparkSession, check_df_schema):
         np.testing.assert_almost_equal(
             row[0], expected_output[idx], decimal=3, err_msg=f"Row {idx} is not equal"
         )
+
+
+def test_hf_emb_mean_pooling(spark: SparkSession, check_df_schema):
+    """Test embedding with mean pooling (for models like MiniLM)."""
+    data = [
+        ("mark", "doctor", None),
+        ("john", "scientist", 10000),
+        ("tara", "engineer", 20000),
+        ("jen", "nurse", 10000),
+    ]
+    columns = ["name", "occupation", "salary"]
+    input_df = spark.createDataFrame(data, schema=columns)
+
+    hf_model = "bert-base-uncased"
+    max_seq_length = 8
+
+    hf_emb = DistHFTransformation(
+        ["occupation"], "embedding_hf", hf_model, max_seq_length, pooling="mean"
+    )
+    output_df = hf_emb.apply(input_df)
+
+    check_df_schema(output_df)
+
+    output_data = output_df.collect()
+
+    # Compute expected mean-pooled embeddings
+    original_text = [row[1] for row in data]
+    tokenizer = AutoTokenizer.from_pretrained(hf_model)
+    config = AutoConfig.from_pretrained(hf_model)
+    lm_model = AutoModel.from_pretrained(hf_model, config)
+    lm_model.eval()
+
+    embeddings_list = []
+    for text in original_text:
+        outputs = tokenizer(
+            text,
+            max_length=max_seq_length,
+            truncation=True,
+            padding="max_length",
+            return_tensors="pt",
+        )
+        with th.no_grad():
+            lm_outputs = lm_model(
+                input_ids=outputs["input_ids"],
+                attention_mask=outputs["attention_mask"],
+                token_type_ids=outputs["token_type_ids"],
+            )
+            token_embs = lm_outputs.last_hidden_state
+            mask = outputs["attention_mask"].unsqueeze(-1).float()
+            emb = (token_embs * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
+            embeddings_list.append(emb.squeeze().numpy())
+
+    for idx, row in enumerate(output_data):
+        np.testing.assert_almost_equal(
+            row[0], embeddings_list[idx], decimal=3, err_msg=f"Row {idx} is not equal"
+        )

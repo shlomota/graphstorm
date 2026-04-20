@@ -57,6 +57,9 @@ DTYPE_MAP = {TYPE_FLOAT32: FloatType(), TYPE_FLOAT64: DoubleType()}
 HUGGINGFACE_TRANFORM = "huggingface"
 HUGGINGFACE_TOKENIZE = "tokenize_hf"
 HUGGINGFACE_EMB = "embedding_hf"
+HUGGINGFACE_POOLING_CLS = "cls"
+HUGGINGFACE_POOLING_MEAN = "mean"
+VALID_HF_POOLING = [HUGGINGFACE_POOLING_CLS, HUGGINGFACE_POOLING_MEAN]
 
 ################# Hard Negative transformations  ################
 ORDER_INDEX = "hard_negative_order_id"

@@ -25,12 +25,22 @@ from pyspark.sql.functions import udf
 from transformers import AutoTokenizer, AutoModel, AutoConfig
 from huggingface_hub.utils import EntryNotFoundError, LocalEntryNotFoundError
 
-from graphstorm_processing.constants import HUGGINGFACE_TOKENIZE, HUGGINGFACE_EMB
+from graphstorm_processing.constants import (
+    HUGGINGFACE_TOKENIZE,
+    HUGGINGFACE_EMB,
+    HUGGINGFACE_POOLING_CLS,
+    HUGGINGFACE_POOLING_MEAN,
+)
 from .base_dist_transformation import DistributedTransformation
 
 
 def apply_transform(
-    cols: Sequence[str], action: str, hf_model: str, max_seq_length: int, input_df: DataFrame
+    cols: Sequence[str],
+    action: str,
+    hf_model: str,
+    max_seq_length: int,
+    pooling: str,
+    input_df: DataFrame,
 ) -> tuple[DataFrame, int]:
     """Applies a single normalizer to the imputed dataframe, individually to each of the columns
     provided in the cols argument.
@@ -45,6 +55,9 @@ def apply_transform(
         The name of huggingface model.
     max_seq_length: int
         The maximal length of the tokenization results.
+    pooling: str
+        Pooling strategy for embeddings. "cls" uses pooler_output, "mean" uses
+        attention-masked mean of last_hidden_state.
     input_df : DataFrame
         The input DataFrame to apply normalization to.
 
@@ -156,6 +169,9 @@ def apply_transform(
         lm_model.eval()
         lm_model = lm_model.to(device)
 
+        # Check if model supports token_type_ids
+        model_supports_token_type_ids = getattr(config, "type_vocab_size", 0) > 0
+
         # Define UDF
         @udf(returnType=embedding_schema)
         def lm_emb(text):
@@ -171,16 +187,25 @@ def apply_transform(
                 padding="max_length",
                 return_tensors="pt",
             )
-            token_type_ids = outputs.get("token_type_ids")
-            if token_type_ids is None:
-                token_type_ids = th.zeros_like(outputs["input_ids"], dtype=th.int8)
+            model_kwargs = {
+                "input_ids": outputs["input_ids"].to(device),
+                "attention_mask": outputs["attention_mask"].to(device).long(),
+            }
+            if model_supports_token_type_ids:
+                token_type_ids = outputs.get("token_type_ids")
+                if token_type_ids is None:
+                    token_type_ids = th.zeros_like(outputs["input_ids"], dtype=th.int8)
+                model_kwargs["token_type_ids"] = token_type_ids.to(device).long()
+
             with th.no_grad():
-                lm_outputs = lm_model(
-                    input_ids=outputs["input_ids"].to(device),
-                    attention_mask=outputs["attention_mask"].to(device).long(),
-                    token_type_ids=token_type_ids.to(device).long(),
-                )
-                embeddings = lm_outputs.pooler_output.cpu().squeeze().numpy()
+                lm_outputs = lm_model(**model_kwargs)
+                if pooling == HUGGINGFACE_POOLING_MEAN:
+                    token_embs = lm_outputs.last_hidden_state  # (1, seq_len, hidden)
+                    mask = outputs["attention_mask"].to(device).unsqueeze(-1).float()
+                    embeddings = (token_embs * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
+                    embeddings = embeddings.cpu().squeeze().numpy()
+                else:
+                    embeddings = lm_outputs.pooler_output.cpu().squeeze().numpy()
             return embeddings.tolist()
 
         # Apply the UDF to the DataFrame
@@ -204,10 +229,18 @@ class DistHFTransformation(DistributedTransformation):
         The name of the lm model.
     max_seq_length: int, required
         The maximal length of the tokenization results.
+    pooling: str, optional
+        Pooling strategy for embeddings. Default "cls" uses pooler_output (BERT-style).
+        Use "mean" for models like MiniLM or embeddinggemma.
     """
 
     def __init__(
-        self, cols: Sequence[str], action: str, hf_model: str, max_seq_length: int
+        self,
+        cols: Sequence[str],
+        action: str,
+        hf_model: str,
+        max_seq_length: int,
+        pooling: str = HUGGINGFACE_POOLING_CLS,
     ) -> None:
         super().__init__(cols)
         self.cols = cols
@@ -215,11 +248,12 @@ class DistHFTransformation(DistributedTransformation):
         self.action = action
         self.hf_model = hf_model
         self.max_seq_length = max_seq_length
+        self.pooling = pooling
         self.output_dim = None
 
     def apply(self, input_df: DataFrame) -> DataFrame:
         transformed_df, output_dim = apply_transform(
-            self.cols, self.action, self.hf_model, self.max_seq_length, input_df
+            self.cols, self.action, self.hf_model, self.max_seq_length, self.pooling, input_df
         )
 
         self.output_dim = output_dim
